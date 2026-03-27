@@ -1,0 +1,218 @@
+# ──────────────────────────────────────────────────────
+# GitHub Actions — Terraform CI/CD con OIDC (Azure)
+# ──────────────────────────────────────────────────────
+name: "Terraform CI/CD"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - "modules/**"
+  pull_request:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - "modules/**"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Acción a ejecutar"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+permissions:
+  id-token: write    # Requerido para OIDC
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.9.5"
+  WORKING_DIR: "infra"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_USE_OIDC: true
+
+jobs:
+  # ─── Job 1: Validar formato y sintaxis ────────────
+  validate:
+    name: "🔍 Validate"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -recursive -check
+        working-directory: ${{ env.WORKING_DIR }}
+        continue-on-error: true
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        id: init
+        run: terraform init -backend-config=backend.hcl
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Post Validation Results (PR Comment)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const output = `### 🧪 Terraform Validation Results
+            | Step | Status |
+            |------|--------|
+            | 🖌 Format | \`${{ steps.fmt.outcome }}\` |
+            | ⚙️ Init | \`${{ steps.init.outcome }}\` |
+            | ✅ Validate | \`${{ steps.validate.outcome }}\` |
+
+            *Pushed by: @${{ github.actor }}*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            });
+
+  # ─── Job 2: Plan de Terraform ─────────────────────
+  plan:
+    name: "📋 Plan"
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        run: terraform init -backend-config=backend.hcl
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var-file=env/dev.tfvars \
+            -out=plan.tfplan \
+            -no-color 2>&1 | tee plan_output.txt
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Upload Plan as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan
+          path: |
+            ${{ env.WORKING_DIR }}/plan.tfplan
+            ${{ env.WORKING_DIR }}/plan_output.txt
+
+      - name: Post Plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const plan = fs.readFileSync('${{ env.WORKING_DIR }}/plan_output.txt', 'utf8');
+            const truncated = plan.length > 60000 ? plan.substring(0, 60000) + '\n... (truncated)' : plan;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### 📋 Terraform Plan\n\`\`\`\n${truncated}\n\`\`\``
+            });
+
+  # ─── Job 3: Apply (solo manual) ───────────────────
+  apply:
+    name: "🚀 Apply"
+    runs-on: ubuntu-latest
+    needs: plan
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply'
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        run: terraform init -backend-config=backend.hcl
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Apply
+        run: terraform apply -var-file=env/dev.tfvars -auto-approve
+        working-directory: ${{ env.WORKING_DIR }}
+
+  # ─── Job 4: Destroy (solo manual) ─────────────────
+  destroy:
+    name: "💥 Destroy"
+    runs-on: ubuntu-latest
+    needs: plan
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Init
+        run: terraform init -backend-config=backend.hcl
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Destroy
+        run: terraform destroy -var-file=env/dev.tfvars -auto-approve
+        working-directory: ${{ env.WORKING_DIR }}

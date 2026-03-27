@@ -1,10 +1,14 @@
+# ──────────────────────────────────────────────
 # Resource Group y wiring de módulos
+# ──────────────────────────────────────────────
+
 resource "azurerm_resource_group" "rg" {
-  name     = "${var.prefix}-rg"
+  name     = "rg-${var.prefix}-AnaFiquitiva"
   location = var.location
   tags     = var.tags
 }
 
+# ── Red Virtual con 2 subredes ─────────────────
 module "vnet" {
   source              = "../modules/vnet"
   resource_group_name = azurerm_resource_group.rg.name
@@ -13,6 +17,7 @@ module "vnet" {
   tags                = var.tags
 }
 
+# ── VMs Linux con nginx (cloud-init) ───────────
 module "compute" {
   source              = "../modules/compute"
   resource_group_name = azurerm_resource_group.rg.name
@@ -26,6 +31,7 @@ module "compute" {
   tags                = var.tags
 }
 
+# ── Load Balancer público + NSG ─────────────────
 module "lb" {
   source              = "../modules/lb"
   resource_group_name = azurerm_resource_group.rg.name

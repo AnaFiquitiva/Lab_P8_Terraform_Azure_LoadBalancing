@@ -1,9 +1,9 @@
 # ──────────────────────────────────────────────
-# Variables del módulo LB
+# Variables del módulo Compute
 # ──────────────────────────────────────────────
 
 variable "resource_group_name" {
-  description = "Nombre del Resource Group"
+  description = "Nombre del Resource Group donde se despliegan las VMs"
   type        = string
 }
 
@@ -17,13 +17,28 @@ variable "prefix" {
   type        = string
 }
 
-variable "backend_nic_ids" {
-  description = "Lista de IDs de NICs a asociar al backend pool del LB"
-  type        = list(string)
+variable "admin_username" {
+  description = "Usuario administrador de las VMs"
+  type        = string
 }
 
-variable "allow_ssh_from_cidr" {
-  description = "CIDR de la IP autorizada para SSH (formato X.X.X.X/32)"
+variable "ssh_public_key" {
+  description = "Contenido de la llave pública SSH para autenticación"
+  type        = string
+}
+
+variable "subnet_id" {
+  description = "ID de la subnet donde se conectan las NICs"
+  type        = string
+}
+
+variable "vm_count" {
+  description = "Número de VMs a crear"
+  type        = number
+}
+
+variable "cloud_init" {
+  description = "Contenido del script cloud-init para configurar las VMs"
   type        = string
 }
 
